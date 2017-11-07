@@ -206,6 +206,8 @@ bool Metadata::setRawMemory(u32 file, u32 key, const void* mem, size_t size)
 	auto* data = getOrCreateData(file, key);
 	if (!data) return false;
 
+	if(data->m_type == DataItem::RAW_MEMORY) m_allocator.deallocate(data->m_raw.memory);
+
 	data->m_type = DataItem::RAW_MEMORY;
 	data->m_raw.memory = m_allocator.allocate(size);
 	copyMemory(data->m_raw.memory, mem, size);
@@ -220,6 +222,8 @@ bool Metadata::setInt(u32 file, u32 key, int value)
 	auto* data = getOrCreateData(file, key);
 	if (!data) return false;
 
+	if (data->m_type == DataItem::RAW_MEMORY) m_allocator.deallocate(data->m_raw.memory);
+
 	data->m_type = DataItem::INT;
 	data->m_int = value;
 
@@ -231,6 +235,8 @@ bool Metadata::setString(u32 file, u32 key, const char* value)
 {
 	auto* data = getOrCreateData(file, key);
 	if (!data) return false;
+
+	if (data->m_type == DataItem::RAW_MEMORY) m_allocator.deallocate(data->m_raw.memory);
 
 	data->m_type = DataItem::STRING;
 	copyString(data->m_string, value);
