@@ -1453,7 +1453,7 @@ struct PipelineImpl LUMIX_FINAL : public Pipeline
 		Matrix projection_matrix;
 		projection_matrix.setPerspective(fov, 1, 0.01f, range, bgfx::getCaps()->homogeneousDepth, true);
 		Matrix view_matrix;
-		view_matrix.lookAt(pos, pos - mtx.getZVector(), mtx.getYVector());
+		view_matrix.lookAt(pos, pos + mtx.getZVector(), mtx.getYVector());
 		bgfx::setViewTransform(m_current_view->bgfx_id, &view_matrix.m11, &projection_matrix.m11);
 
 		PointLightShadowmap& s = m_point_light_shadowmaps.emplace();
