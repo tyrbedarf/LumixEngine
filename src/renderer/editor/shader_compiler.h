@@ -22,6 +22,7 @@ namespace PlatformInterface { struct Process; }
 
 class ShaderCompiler
 {
+	struct Task;
 public:
 	ShaderCompiler(StudioApp& app, LogUI& log_ui);
 	~ShaderCompiler();
@@ -32,7 +33,7 @@ public:
 	void compile(const char* path, bool debug);
 
 private:
-	void compileTask();
+	bool isCompiling();
 	void findShaderFiles(const char* src_dir);
 	bool getSourceFromBinaryBasename(char* out, int max_size, const char* binary_basename);
 	void wait();
@@ -88,11 +89,11 @@ private:
 	Array<string> m_changed_files;
 	LoadHook m_load_hook;
 	MT::SpinMutex m_mutex;
+	MT::Semaphore m_semaphore;
 	LogUI& m_log_ui;
 	bool m_is_opengl;
-	volatile int m_empty_queue;
+	Task* m_task;
 	volatile bool m_job_exit_request = false;
-	volatile int m_job_runnig = 0;
 };
 
 

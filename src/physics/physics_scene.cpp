@@ -214,15 +214,12 @@ struct PhysicsSceneImpl LUMIX_FINAL : public PhysicsScene
 	{
 		void submitTask(PxBaseTask& task) override
 		{
-			JobSystem::JobDecl job;
-			job.data = &task;
-			job.task = [](void* data) {
-				PxBaseTask* task = (PxBaseTask*)data;
+			JobSystem::run(&task, [](void* ptr) {
+				PxBaseTask* task = (PxBaseTask*)ptr;
 				PROFILE_FUNCTION();
 				task->run();
 				task->release();
-			};
-			JobSystem::runJobs(&job, 1, nullptr);
+			}, nullptr, JobSystem::INVALID_HANDLE);
 		}
 		PxU32 getWorkerCount() const override { return MT::getCPUsCount(); }
 	};

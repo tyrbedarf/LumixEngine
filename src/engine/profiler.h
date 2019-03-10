@@ -1,7 +1,9 @@
 #pragma once
 
 
+#include "engine/array.h"
 #include "engine/lumix.h"
+#include "engine/mt/sync.h"
 #include "engine/mt/thread.h"
 
 
@@ -16,65 +18,74 @@ namespace Profiler
 {
 
 
-struct Block;
-enum class BlockType
+struct ThreadContext
 {
-	TIME,
-	INT
+	ThreadContext(IAllocator& allocator) 
+		: buffer(allocator)
+		, mutex(false)
+	{
+		buffer.resize(1024 * 512);
+	}
+
+	int open_blocks_count = 0;
+	Array<u8> buffer;
+	uint begin = 0;
+	uint end = 0;
+	uint rows = 0;
+	bool open = false;
+	MT::SpinMutex mutex;
+	StaticString<64> name;
 };
 
 
-LUMIX_ENGINE_API MT::ThreadID getThreadID(int index);
+enum class EventType : u8
+{
+	BEGIN_BLOCK,
+	BLOCK_COLOR,
+	END_BLOCK,
+	FRAME,
+	STRING
+};
+
+
+#pragma pack(1)
+struct EventHeader
+{
+	u16 size;
+	EventType type;
+	u64 time;
+};
+#pragma pack()
+
+
 LUMIX_ENGINE_API void setThreadName(const char* name);
-LUMIX_ENGINE_API const char* getThreadName(MT::ThreadID thread_id);
-LUMIX_ENGINE_API int getThreadIndex(u32 id);
-LUMIX_ENGINE_API int getThreadCount();
 
 LUMIX_ENGINE_API u64 now();
-LUMIX_ENGINE_API Block* getRootBlock(MT::ThreadID thread_id);
-LUMIX_ENGINE_API Block* getCurrentBlock();
-LUMIX_ENGINE_API int getBlockInt(Block* block);
-LUMIX_ENGINE_API BlockType getBlockType(Block* block);
-LUMIX_ENGINE_API Block* getBlockFirstChild(Block* block);
-LUMIX_ENGINE_API Block* getBlockNext(Block* block);
-LUMIX_ENGINE_API float getBlockLength(Block* block);
-LUMIX_ENGINE_API int getBlockHitCount(Block* block);
-LUMIX_ENGINE_API u64 getBlockHitStart(Block* block, int hit_index);
-LUMIX_ENGINE_API u64 getBlockHitLength(Block* block, int hit_index);
-LUMIX_ENGINE_API const char* getBlockName(Block* block);
+LUMIX_ENGINE_API u64 frequency();
+LUMIX_ENGINE_API void pause(bool paused);
 
-LUMIX_ENGINE_API void record(const char* name, int value);
-LUMIX_ENGINE_API void* beginBlock(const char* name);
-LUMIX_ENGINE_API void* endBlock();
+LUMIX_ENGINE_API void beginBlock(const char* name);
+LUMIX_ENGINE_API void blockColor(u8 r, u8 g, u8 b);
+LUMIX_ENGINE_API void endBlock();
 LUMIX_ENGINE_API void frame();
-LUMIX_ENGINE_API DelegateList<void ()>& getFrameListeners();
+LUMIX_ENGINE_API void recordString(const char* value);
 
+LUMIX_ENGINE_API void beginFiberSwitch();
 
-#ifdef _DEBUG
-	struct Scope
-	{
-		explicit Scope(const char* name) { ptr = beginBlock(name); }
-		~Scope()
-		{
-			void* tmp = endBlock();
-			ASSERT(tmp == ptr);
-		}
+LUMIX_ENGINE_API Array<ThreadContext*>& lockContexts();
+LUMIX_ENGINE_API void unlockContexts();
 
-		const void* ptr;
-	};
-#else
-	struct Scope
-	{
-		explicit Scope(const char* name) { beginBlock(name); }
-		~Scope() { endBlock(); }
-	};
-#endif
+struct Scope
+{
+	explicit Scope(const char* name) { beginBlock(name); }
+	~Scope() { endBlock(); }
+};
 
 
 } // namespace Profiler
 
 
-#define PROFILE_INT(name, x) Profiler::record((name), (x));
+#define PROFILE_INT(...)
 #define PROFILE_FUNCTION() Profiler::Scope profile_scope(__FUNCTION__);
 #define PROFILE_BLOCK(name) Profiler::Scope profile_scope(name);
 

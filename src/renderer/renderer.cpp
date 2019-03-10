@@ -518,7 +518,7 @@ struct RendererImpl LUMIX_FINAL : public Renderer
 		}
 
 		bgfx::Init init;
-		init.limits.maxEncoders = MT::getCPUsCount();
+		init.limits.maxEncoders = MT::getCPUsCount() + 1;
 		init.type = renderer_type;
 		init.callback = &m_callback_stub;
 		init.allocator = &m_bgfx_allocator;
@@ -592,6 +592,7 @@ struct RendererImpl LUMIX_FINAL : public Renderer
 		if (s_encoder == nullptr)
 		{
 			s_encoder = bgfx::begin();
+			ASSERT(s_encoder);
 			MT::SpinLock lock(m_encoder_list_mutex);
 			m_encoders.push(&s_encoder);
 		}

@@ -3,6 +3,7 @@
 
 #include "engine/iallocator.h"
 #include "engine/lumix.h"
+#include "engine/metaprogramming.h"
 #include "engine/math_utils.h"
 #include "engine/string.h"
 
@@ -14,15 +15,23 @@ namespace Lumix
 	{
 		typedef HashNode<K, V> my_node;
 
+		HashNode(const K& key, V&& value)
+			: m_key(key)
+			, m_value(Move(value))
+			, m_next(nullptr)
+		{}
+
 		HashNode(const K& key, const V& value)
 			: m_key(key)
 			, m_value(value)
 			, m_next(nullptr)
 		{}
 
-		explicit HashNode(const my_node& src)
+		HashNode(const my_node& src) = delete;
+
+		explicit HashNode(my_node&& src)
 			: m_key(src.m_key)
-			, m_value(src.m_value)
+			, m_value(Move(src.m_value))
 			, m_next(src.m_next)
 		{}
 
@@ -98,8 +107,8 @@ namespace Lumix
 		}
 	};
 
-	template<>
-	struct HashFunc<void*>
+	template<typename T>
+	struct HashFunc<T*>
 	{
 		static u32 get(const void* key)
 		{
@@ -422,6 +431,15 @@ namespace Lumix
 			checkSize();
 		}
 
+		value_type& insert(const key_type& key, value_type&& val)
+		{
+			size_type pos = getPosition(key);
+			node_type* node = construct(getEmptyNode(pos), key, Move(val));
+			m_size++;
+			checkSize();
+			return node->m_value;
+		}
+
 		iterator erase(iterator it)
 		{
 			ASSERT(it.isValid());
@@ -537,8 +555,9 @@ namespace Lumix
 		{
 			ASSERT(Math::isPowOfTwo(ids_count));
 			m_table = (node_type*)m_allocator.allocate(sizeof(node_type) * ids_count);
-			for(node_type* i = m_table; i < &m_table[ids_count]; ++i)
-				construct(i, m_sentinel);
+			for(node_type* i = m_table; i < &m_table[ids_count]; ++i) {
+				i->m_next = m_sentinel;
+			}
 
 			m_mask = (ids_count - 1);
 			m_max_id = ids_count;
@@ -590,20 +609,14 @@ namespace Lumix
 			m_allocator.deallocate(old);
 		}
 
+		node_type* construct(node_type* where, const key_type& key, value_type&& val)
+		{
+			return new(NewPlaceholder(), where) node_type(key, Move(val));
+		}
+
 		node_type* construct(node_type* where, const key_type& key, const value_type& val)
 		{
 			return new(NewPlaceholder(), where) node_type(key, val);
-		}
-
-		node_type* construct(node_type* where, node_type* node)
-		{
-			where->m_next = node;
-			return where;
-		}
-
-		node_type* construct(node_type* where, const node_type& node)
-		{
-			return new(NewPlaceholder(), where) node_type(node);
 		}
 
 		void destruct(node_type* n)
@@ -618,11 +631,6 @@ namespace Lumix
 			m_sentinel->m_next = m_sentinel;
 		}
 
-		void copyUninitialized(node_type* src, node_type* dst)
-		{
-			construct(dst, src->m_key, src->m_value);
-		}
-
 		node_type* getEmptyNode(size_type pos)
 		{
 			node_type* node = &m_table[pos];
@@ -631,8 +639,15 @@ namespace Lumix
 				node = node->m_next;
 			}
 
-			node->m_next = (nullptr == node->m_next ? construct(reinterpret_cast<node_type*>(m_allocator.allocate(sizeof(node_type))), m_sentinel) : node);
-			return node->m_next;
+			if (node->m_next == m_sentinel) {
+				node->m_next = nullptr;
+				return node;
+			}
+
+			node_type* new_node = (node_type*)m_allocator.allocate(sizeof(node_type));
+			new_node->m_next = m_sentinel;
+			node->m_next = new_node;
+			return new_node;
 		}
 
 		node_type* first() const
@@ -683,10 +698,13 @@ namespace Lumix
 			{
 				node_type* next = n->m_next;
 				destruct(n);
-				construct(n, next ? *next : *m_sentinel);
-				if (next)
-				{
+				
+				if (next) {
+					new (NewPlaceholder(), n) node_type(Move(*next));
 					destruct(next);
+				}
+				else {
+					n->m_next = m_sentinel;
 				}
 				m_allocator.deallocate(next);
 			}
@@ -708,7 +726,7 @@ namespace Lumix
 				{
 					size_type pos = getPosition(n->m_key);
 					node_type* new_node = getEmptyNode(pos);
-					copyUninitialized(n, new_node);
+					construct(new_node, n->m_key, n->m_value);
 					new_node->m_next = nullptr;
 					n = n->m_next;
 				}

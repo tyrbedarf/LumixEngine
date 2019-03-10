@@ -11,6 +11,7 @@
 #include "engine/fs/file_system.h"
 #include "engine/job_system.h"
 #include "engine/log.h"
+#include "engine/mt/task.h"
 #include "engine/mt/thread.h"
 #include "engine/path.h"
 #include "engine/path_utils.h"
@@ -36,6 +37,40 @@ namespace Lumix
 {
 
 
+struct ShaderCompiler::Task : MT::Task {
+	Task(ShaderCompiler& compiler)
+		: MT::Task(compiler.m_app.getWorldEditor().getAllocator()) 
+		, m_compiler(compiler)
+	{}
+
+	int task() override {
+		while (!m_compiler.m_job_exit_request) {
+			m_compiler.m_semaphore.wait();
+			if (m_compiler.m_job_exit_request) return 0;
+
+
+			bool empty = false;
+			{
+				MT::SpinLock lock(m_compiler.m_mutex);
+				
+				if (m_compiler.m_to_compile.empty()) continue;
+
+				m_compiler.m_app.getAssetBrowser().enableUpdate(false);
+				m_compiler.m_compiling = m_compiler.m_to_compile.back();
+				m_compiler.m_to_compile.pop();
+				empty = m_compiler.m_to_compile.empty();
+			}
+			m_compiler.compile(m_compiler.m_compiling, false);
+
+			if (empty) m_compiler.m_app.getAssetBrowser().enableUpdate(true);
+		}
+		return 0;
+	}
+
+	ShaderCompiler& m_compiler;
+};
+
+
 ShaderCompiler::ShaderCompiler(StudioApp& app, LogUI& log_ui)
 	: m_app(app)
 	, m_editor(app.getWorldEditor())
@@ -48,22 +83,19 @@ ShaderCompiler::ShaderCompiler(StudioApp& app, LogUI& log_ui)
 	, m_changed_files(m_editor.getAllocator())
 	, m_mutex(false)
 	, m_load_hook(*m_editor.getEngine().getResourceManager().get(Shader::TYPE), *this)
+	, m_semaphore(0, 64 * 1024)
 {
-	JobSystem::JobDecl job;
-	job.task = [](void* data) { ((ShaderCompiler*)data)->compileTask(); };
-	job.data = this;
-	JobSystem::runJobs(&job, 1, nullptr);
+	m_task = LUMIX_NEW(m_editor.getAllocator(), Task)(*this);
+	m_task->create("shader_compiler");
 	m_is_opengl = bgfx::getRendererType() == bgfx::RendererType::OpenGL || bgfx::getRendererType() == bgfx::RendererType::OpenGLES;
 
 	m_notifications_id = -1;
-	m_empty_queue = 1;
 
 	m_watcher = FileSystemWatcher::create("pipelines", m_editor.getAllocator());
 	m_watcher->getCallback().bind<ShaderCompiler, &ShaderCompiler::onFileChanged>(this);
 	
 	findShaderFiles("pipelines/");
 	parseDependencies();
-	//makeUpToDate(false);
 
 	Engine& engine = m_editor.getEngine();
 	ResourceManagerBase* shader_manager = engine.getResourceManager().get(ShaderBinary::TYPE);
@@ -75,30 +107,6 @@ ShaderCompiler::LoadHook::LoadHook(ResourceManagerBase& manager, ShaderCompiler&
 	: ResourceManagerBase::LoadHook(manager)
 	, m_compiler(compiler)
 {
-}
-
-
-void ShaderCompiler::compileTask()
-{
-	m_job_runnig = 1;
-	for (;;)
-	{
-		JobSystem::wait(&m_empty_queue);
-		if (m_job_exit_request) break;
-
-		m_app.getAssetBrowser().enableUpdate(false);
-
-		{
-			MT::SpinLock lock(m_mutex);
-			m_compiling = m_to_compile.back();
-			m_to_compile.pop();
-			m_empty_queue = m_to_compile.empty();
-		}
-		compile(m_compiling, false);
-
-		if(m_empty_queue) m_app.getAssetBrowser().enableUpdate(true);
-	}
-	m_job_runnig = 0;
 }
 
 
@@ -116,7 +124,7 @@ bool ShaderCompiler::LoadHook::onBeforeLoad(Resource& resource)
 			&& m_compiler.m_to_compile.find([&source_path](const auto& str) { return str == source_path; }) < 0)
 		{
 			m_compiler.m_to_compile.emplace(source_path);
-			m_compiler.m_empty_queue = 0;
+			m_compiler.m_semaphore.signal();
 		}
 		m_compiler.m_hooked_files.push(&resource);
 		m_compiler.m_hooked_files.removeDuplicates();
@@ -131,7 +139,7 @@ void ShaderCompiler::queueCompile(const char* path)
 	MT::SpinLock lock(m_mutex);
 	m_to_compile.emplace(path);
 	m_to_compile.removeDuplicates();
-	m_empty_queue = 0;
+	m_semaphore.signal();
 }
 
 
@@ -260,11 +268,6 @@ void ShaderCompiler::findShaderFiles(const char* src_dir)
 
 void ShaderCompiler::makeUpToDate(bool wait)
 {
-	if (!m_empty_queue)
-	{
-		if (wait) this->wait();
-		return;
-	}
 	if (m_shd_files.empty()) return;
 
 	StaticString<MAX_PATH_LENGTH> pipelines_dir(
@@ -454,8 +457,9 @@ void ShaderCompiler::addDependency(const char* ckey, const char* cvalue)
 ShaderCompiler::~ShaderCompiler()
 {
 	m_job_exit_request = true;
-	m_empty_queue = 0;
-	JobSystem::wait(&m_job_runnig);
+	m_semaphore.signal();
+	m_task->destroy();
+	LUMIX_DELETE(m_app.getWorldEditor().getAllocator(), m_task);
 	FileSystemWatcher::destroy(m_watcher);
 }
 
@@ -487,16 +491,17 @@ void ShaderCompiler::reloadShaders()
 }
 
 
+bool ShaderCompiler::isCompiling()
+{
+	MT::SpinLock lock(m_mutex);
+	return m_compiling != "" || !m_to_compile.empty();
+}
+
+
 void ShaderCompiler::updateNotifications()
 {
-	bool is_compiling = ([&](){
-		if (m_empty_queue == 0) return true;
-
-		MT::SpinLock lock(m_mutex);
-		return m_compiling != "";
-	})();
-
-	if(is_compiling)
+	const bool is_compiling = isCompiling();
+	if (is_compiling)
 	{
 		RenderInterface* ri = m_editor.getRenderInterface();
 		ri->addText2D(1, 1, 16, 0xff000000, "Compiling shaders...");
@@ -604,7 +609,7 @@ void ShaderCompiler::compilePass(const char* shd_path,
 
 void ShaderCompiler::processChangedFiles()
 {
-	if (!m_empty_queue) return;
+	if (isCompiling()) return;
 
 	char changed_file_path[MAX_PATH_LENGTH];
 	{
@@ -665,7 +670,7 @@ void ShaderCompiler::processChangedFiles()
 
 void ShaderCompiler::wait()
 {
-	while (!m_empty_queue)
+	while (isCompiling())
 	{
 		MT::sleep(5);
 	}

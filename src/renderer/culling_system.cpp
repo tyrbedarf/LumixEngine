@@ -135,9 +135,8 @@ public:
 		for(auto& i : m_result) i.clear();
 
 		int step = count / m_result.size();
-		ASSERT(lengthOf(jobs) >= m_result.size());
-		for (int i = 0; i < m_result.size(); i++)
-		{
+		JobSystem::SignalHandle job_counter = JobSystem::INVALID_HANDLE;
+		for (int i = 0; i < m_result.size(); i++) {
 			m_result[i].clear();
 			job_data[i] = {
 				&m_spheres,
@@ -149,12 +148,9 @@ public:
 				i == m_result.size() - 1 ? count - 1 : (i + 1) * step - 1,
 				&frustum
 			};
-			jobs[i].data = &job_data[i];
-			jobs[i].task = &cullTask;
+			JobSystem::run(&job_data[i], cullTask, &job_counter, JobSystem::INVALID_HANDLE);
 		}
-		volatile int job_counter = 0;
-		JobSystem::runJobs(jobs, m_result.size(), &job_counter);
-		JobSystem::wait(&job_counter);
+		JobSystem::wait(job_counter);
 		return m_result;
 	}
 
@@ -254,7 +250,6 @@ private:
 	ModelInstancetoSphereMap m_model_instance_to_sphere_map;
 	SphereToModelInstanceMap m_sphere_to_model_instance_map;
 	CullingJobData job_data[16];
-	JobSystem::JobDecl jobs[16];
 };
 
 

@@ -2263,26 +2263,28 @@ struct PipelineImpl LUMIX_FINAL : public Pipeline
 		m_grasses_buffer.clear();
 		m_terrains_buffer.clear();
 
-		JobSystem::JobDecl jobs[3];
-		JobSystem::LambdaJob job_storage[3];
-		JobSystem::fromLambda([this, &frustum, &lod_ref_point, layer_mask, camera]() {
+		
+		auto get_mesh_infos = [this, &frustum, &lod_ref_point, layer_mask, camera]() {
 			m_mesh_buffer = &m_scene->getModelInstanceInfos(frustum, lod_ref_point, camera, layer_mask);
-		}, &job_storage[0], &jobs[0], nullptr);
+		};
 
-		JobSystem::fromLambda([this, &frustum, &lod_ref_point]() {
+		auto get_terrain_infos = [this, &frustum, &lod_ref_point]() {
 			m_scene->getTerrainInfos(frustum, lod_ref_point, m_terrains_buffer);
-		}, &job_storage[1], &jobs[1], nullptr);
+		};
 
-		if (render_grass)
-		{
-			JobSystem::fromLambda([this, &frustum]() {
-				m_scene->getGrassInfos(frustum, m_applied_camera, m_grasses_buffer);
-			}, &job_storage[2], &jobs[2], nullptr);
+		auto get_grass_infos = [this, &frustum]() {
+			m_scene->getGrassInfos(frustum, m_applied_camera, m_grasses_buffer);
+		};
+
+		JobSystem::SignalHandle counter = JobSystem::INVALID_HANDLE;
+		JobSystem::run(&get_mesh_infos, [](void* user_ptr) { (*(decltype(get_mesh_infos)*)user_ptr)(); }, &counter, JobSystem::INVALID_HANDLE);
+		JobSystem::run(&get_terrain_infos, [](void* user_ptr) { (*(decltype(get_terrain_infos)*)user_ptr)(); }, &counter, JobSystem::INVALID_HANDLE);
+
+		if (render_grass) {
+			JobSystem::run(&get_grass_infos, [](void* user_ptr) { (*(decltype(get_grass_infos)*)user_ptr)(); }, &counter, JobSystem::INVALID_HANDLE);
 		}
 
-		volatile int counter = 0;
-		JobSystem::runJobs(jobs, render_grass ? 3 : 2, &counter);
-		JobSystem::wait(&counter);
+		JobSystem::wait(counter);
 		
 		renderTerrains(m_terrains_buffer);
 		renderMeshes(*m_mesh_buffer, use_occlusion_culling);
@@ -3018,21 +3020,17 @@ struct PipelineImpl LUMIX_FINAL : public Pipeline
 			const Array<MeshInstance>* meshes;
 			bool use_occlusion_culling;
 		} data[64];
-		JobSystem::JobDecl jobs[64];
-		volatile int counter = 0;
-		for (int i = 0; i < meshes.size(); ++i)
-		{
+		JobSystem::SignalHandle counter = JobSystem::INVALID_HANDLE;
+		for (int i = 0; i < meshes.size(); ++i) {
 			data[i].that = this;
 			data[i].use_occlusion_culling = use_occlusion_culling;
 			data[i].meshes = &meshes[i];
-			jobs[i].data = &data[i];
-			jobs[i].task = [](void* data) {
+			JobSystem::run(&data[i], [](void* data) {
 				Data* job_data = (Data*)data;
 				job_data->that->renderMeshes(*job_data->meshes, job_data->use_occlusion_culling);
-			};
+			}, &counter, JobSystem::INVALID_HANDLE);
 		}
-		JobSystem::runJobs(jobs, meshes.size(), &counter);
-		JobSystem::wait(&counter);
+		JobSystem::wait(counter);
 	}
 
 

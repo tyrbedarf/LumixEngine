@@ -82,6 +82,30 @@ static const ComponentType BONE_ATTACHMENT_TYPE = Reflection::getComponentType("
 static const ComponentType ENVIRONMENT_PROBE_TYPE = Reflection::getComponentType("environment_probe");
 static const ComponentType TEXT_MESH_TYPE = Reflection::getComponentType("text_mesh");
 
+template <int Size>
+struct LambdaStorage
+{
+	template <typename T>
+	static void call(void* f)
+	{
+		(*(T*)f)();
+	}
+
+	template <typename T> 
+	void operator=(const T&& lambda) {
+		static_assert(sizeof(lambda) <= sizeof(data), "not enough storage");
+		new (data) T(lambda);
+		caller = &call<T>;
+	}
+	
+	void invoke() {
+		caller(data);
+	}
+
+	u8 data[Size];
+	void (*caller)(void*);
+};
+
 
 struct Decal : public DecalInfo
 {
@@ -3568,17 +3592,15 @@ public:
 			m_temporary_infos.pop();
 		}
 
-		JobSystem::JobDecl jobs[64];
-		JobSystem::LambdaJob job_storage[64];
+		LambdaStorage<64> jobs[64];
 		ASSERT(results.size() <= lengthOf(jobs));
 
-		volatile int counter = 0;
-		for (int subresult_index = 0; subresult_index < results.size(); ++subresult_index)
-		{
+		JobSystem::SignalHandle counter = JobSystem::INVALID_HANDLE;
+		for (int subresult_index = 0; subresult_index < results.size(); ++subresult_index) {
 			Array<MeshInstance>& subinfos = m_temporary_infos[subresult_index];
 			subinfos.clear();
 
-			JobSystem::fromLambda([&layer_mask, &subinfos, this, &results, subresult_index, lod_ref_point, camera]() {
+			jobs[subresult_index] = [&layer_mask, &subinfos, this, &results, subresult_index, lod_ref_point, camera]() {
 				PROFILE_BLOCK("Temporary Info Job");
 				PROFILE_INT("ModelInstance count", results[subresult_index].size());
 				if (results[subresult_index].empty()) return;
@@ -3619,12 +3641,10 @@ public:
 					};
 					std::sort(begin, end, cmp);
 				}
-			}, &job_storage[subresult_index], &jobs[subresult_index], nullptr);
+			};
+			JobSystem::run(&jobs[subresult_index], [](void* user_ptr) { ((LambdaStorage<64>*)user_ptr)->invoke(); }, &counter, JobSystem::INVALID_HANDLE);
 		}
-		JobSystem::runJobs(jobs, results.size(), &counter);
-		JobSystem::wait(&counter);
-
-		
+		JobSystem::wait(counter);
 
 		return m_temporary_infos;
 	}

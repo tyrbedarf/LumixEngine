@@ -16,6 +16,7 @@
 #include "engine/lua_wrapper.h"
 #include "engine/lumix.h"
 #include "engine/mt/atomic.h"
+#include "engine/mt/task.h"
 #include "engine/mt/thread.h"
 #include "engine/path_utils.h"
 #include "engine/plugin_manager.h"
@@ -334,6 +335,20 @@ struct MaterialPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 
 struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 {
+	struct Task : MT::Task {
+		Task(ModelPlugin& plugin) 
+			: MT::Task(plugin.m_app.getWorldEditor().getAllocator())
+			, plugin(plugin)
+		{}
+		
+		int task() override {
+			plugin.createTextureTileTask();
+			return 0;
+		}
+
+		ModelPlugin& plugin;
+	};
+
 	explicit ModelPlugin(StudioApp& app)
 		: m_app(app)
 		, m_camera_entity(INVALID_ENTITY)
@@ -342,13 +357,10 @@ struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 		, m_universe(nullptr)
 		, m_is_mouse_captured(false)
 		, m_tile(app.getWorldEditor().getAllocator())
-		, m_texture_tile_creator(app.getWorldEditor().getAllocator())
+		, m_texture_tile_creator(*this)
 	{
 		app.getAssetBrowser().registerExtension("msh", Model::TYPE);
-		JobSystem::JobDecl job;
-		job.data = this;
-		job.task = [](void* data) { ((ModelPlugin*)data)->createTextureTileTask(); };
-		JobSystem::runJobs(&job, 1, nullptr);
+		m_texture_tile_creator.task.create("model_tile_creator");
 		createPreviewUniverse();
 		createTileUniverse();
 	}
@@ -357,8 +369,8 @@ struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 	~ModelPlugin()
 	{
 		m_texture_tile_creator.shutdown = true;
-		m_texture_tile_creator.count = 0;
-		m_texture_tile_creator.shutdown_event.wait();
+		m_texture_tile_creator.semaphore.signal();
+		m_texture_tile_creator.task.destroy();
 		auto& engine = m_app.getWorldEditor().getEngine();
 		engine.destroyUniverse(*m_universe);
 		Pipeline::destroy(m_pipeline);
@@ -371,13 +383,15 @@ struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 	{
 		while (!m_texture_tile_creator.shutdown)
 		{
-			JobSystem::wait(&m_texture_tile_creator.count);
+			m_texture_tile_creator.semaphore.wait();
 			if (m_texture_tile_creator.shutdown) break;
-			MT::SpinLock lock(m_texture_tile_creator.lock);
-
-			StaticString<MAX_PATH_LENGTH> tile = m_texture_tile_creator.tiles.back();
-			m_texture_tile_creator.tiles.pop();
-			MT::atomicIncrement(&m_texture_tile_creator.count);
+			
+			StaticString<MAX_PATH_LENGTH> tile;
+			{
+				MT::SpinLock lock(m_texture_tile_creator.lock);
+				tile = m_texture_tile_creator.tiles.back();
+				m_texture_tile_creator.tiles.pop();
+			}
 
 			IAllocator& allocator = m_app.getWorldEditor().getAllocator();
 
@@ -448,7 +462,6 @@ struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 				g_log_error.log("Editor") << "Failed to save " << out_path;
 			}
 		}
-		m_texture_tile_creator.shutdown_event.trigger();
 	}
 
 
@@ -922,7 +935,7 @@ struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 		{
 			MT::SpinLock lock(m_texture_tile_creator.lock);
 			m_texture_tile_creator.tiles.emplace(in_path);
-			MT::atomicDecrement(&m_texture_tile_creator.count);
+			m_texture_tile_creator.semaphore.signal();
 			return true;
 		}
 		if (type == Material::TYPE) return copyFile("models/editor/tile_material.dds", out_path);
@@ -975,19 +988,19 @@ struct ModelPlugin LUMIX_FINAL : public AssetBrowser::IPlugin
 	
 	struct TextureTileCreator
 	{
-		explicit TextureTileCreator(IAllocator& allocator)
-			: tiles(allocator)
+		explicit TextureTileCreator(ModelPlugin& plugin)
+			: tiles(plugin.m_app.getWorldEditor().getAllocator())
 			, lock(false)
-			, shutdown_event(true)
+			, task(plugin)
+			, semaphore(0, 64 * 1024)
 		{
-			shutdown_event.reset();
 		}
 
-		volatile int count = 1;
 		volatile bool shutdown = false;
-		MT::Event shutdown_event;
 		MT::SpinMutex lock;
+		MT::Semaphore semaphore;
 		Array<StaticString<MAX_PATH_LENGTH>> tiles;
+		Task task;
 	} m_texture_tile_creator;
 };
 

@@ -1109,28 +1109,35 @@ struct AnimationSceneImpl LUMIX_FINAL : public AnimationScene
 		PROFILE_FUNCTION();
 		if (m_animables.size() == 0) return;
 
-		JobSystem::JobDecl jobs[16];
-		JobSystem::LambdaJob job_storage[16];
+		struct JobData {
+			float time_delta;
+			AnimationSceneImpl* scene;
+			int from;
+			int count;
+		} jobs[64];
 
 		int job_count = Math::minimum(lengthOf(jobs), m_animables.size());
 		ASSERT(job_count > 0);
-		volatile int counter = 0;
-		for (int i = 0; i < job_count; ++i)
-		{
-			JobSystem::fromLambda([time_delta, this, i, job_count]() {
+		ASSERT(lengthOf(jobs) >= job_count);
+		JobSystem::SignalHandle counter = JobSystem::INVALID_HANDLE;
+		const int all_count = m_animables.size();
+		for (int i = 0; i < job_count; ++i) {
+			int batch_count = all_count / job_count;
+			if (i == job_count - 1) batch_count = all_count - (job_count - 1) * batch_count;
+			jobs[i].scene = this;
+			jobs[i].from = i * all_count / job_count;
+			jobs[i].count = batch_count;
+			jobs[i].time_delta = time_delta;
+			JobSystem::run(&jobs[i], [](void* user_data) {
+				JobData* data = (JobData*)user_data;
 				PROFILE_BLOCK("Animate Job");
-				int all_count = m_animables.size();
-				int batch_count = all_count / job_count;
-				if (i == job_count - 1) batch_count = all_count - (job_count - 1) * batch_count;
-				for (int j = 0; j < batch_count; ++j)
-				{
-					Animable& animable = m_animables.at(j + i * all_count / job_count);
-					AnimationSceneImpl::updateAnimable(animable, time_delta);
+				for (int j = 0; j < data->count; ++j) {
+					Animable& animable = data->scene->m_animables.at(j + data->from);
+					data->scene->AnimationSceneImpl::updateAnimable(animable, data->time_delta);
 				}
-			}, &job_storage[i], &jobs[i], nullptr);
+			}, &counter, JobSystem::INVALID_HANDLE);
 		}
-		JobSystem::runJobs(jobs, job_count, &counter);
-		JobSystem::wait(&counter);
+		JobSystem::wait(counter);
 	}
 
 
