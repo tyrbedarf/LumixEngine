@@ -31,6 +31,20 @@ function has_plugin(plugin)
   return false
 end
 
+-- utility function to find latest installed Windows 10 SDK version
+-- TODO: should we read it out of this registry key?
+--  HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\Microsoft SDKs\Windows\v10.0
+function FindLocalWindows10SDKVersion()
+   -- look for the highest in C:\Program Files (x86)\Windows Kits\10\Include
+   -- matching 10.x.xxxxx.x
+   local sdkFolders = os.matchdirs("C:/Program Files (x86)/Windows Kits/10/Include/10.*")
+   if #sdkFolders == 0 then
+      error("Must have a Windows 10 SDK installed!")
+   end
+   table.sort(sdkFolders)
+   return path.getname(sdkFolders[#sdkFolders]) -- return as version, like "10.0.10240.0"
+end
+
 
 newoption {
 	trigger = "plugins",
@@ -615,6 +629,7 @@ project "engine"
 
 
 	defaultConfigurations()
+	windowstargetplatformversion(FindLocalWindows10SDKVersion())
 
 if has_plugin("physics") then
 	project "physics"
@@ -629,6 +644,7 @@ if has_plugin("physics") then
 		linkPhysX()
 
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 
 
@@ -656,6 +672,7 @@ if has_plugin("renderer") then
 			links { "psapi" }
 
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 		
 if has_plugin("animation") then
@@ -674,6 +691,7 @@ if has_plugin("animation") then
 		
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 
 for _, plugin in ipairs(plugins) do
@@ -696,6 +714,7 @@ if build_steam then
 		links { "engine", "steam_api64" }
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 	
 if has_plugin("audio") then
@@ -721,6 +740,7 @@ if has_plugin("audio") then
 
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 	
 if has_plugin("navigation") then
@@ -739,6 +759,7 @@ if has_plugin("navigation") then
 		
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 
 if has_plugin("gui") then
@@ -762,6 +783,7 @@ if has_plugin("gui") then
 	
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 	
 if has_plugin("lua_script") then
@@ -779,6 +801,7 @@ if has_plugin("lua_script") then
 
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 		
 if build_unit_tests then
@@ -798,6 +821,7 @@ if build_unit_tests then
 
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 end
 
 
@@ -884,6 +908,7 @@ if build_app then
 			callback()
 		end
 		
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 		useLua()
 		defaultConfigurations()
 		strip()
@@ -931,6 +956,7 @@ if build_studio then
 		
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 
 	project "studio"
 		kind "WindowedApp"
@@ -1006,6 +1032,7 @@ if build_studio then
 		
 		useLua()
 		defaultConfigurations()
+		windowstargetplatformversion(FindLocalWindows10SDKVersion())
 		
 		if _ACTION == "vs2017" then
 			copyDlls("Debug", "win64", "Debug")
